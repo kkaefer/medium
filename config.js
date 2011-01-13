@@ -1,7 +1,10 @@
-exports.jabber = {
-  host: 'jabber.org',
-  jid: 'jabber.org',
-  muc: 'conference.jabber.org'
+exports.xmpp = {
+  // host: 'jabber.org',
+  // jid: 'jabber.org',
+  // muc: 'conference.jabber.org'
+  host: 'localhost',
+  jid: 'localhost',
+  muc: 'conference.localhost'
 };
 
 exports.irc = {
