@@ -23,16 +23,23 @@ process.on('SIGINT', function() {
 
 ircd.createServer(config.irc, function (irc) {
   var jabber = new xmpp.Connection(config.xmpp);
-  
+
+  jabber.on('error', function fn() {
+    if (!irc.loggedIn) return irc.on('login', fn.bind(this));
+
+    irc.error('Could not connect to Jabber server.');
+    process.nextTick(function() { irc.end(); });
+  });
+
+
   // Rooms management.
   var rooms = {};
   function room(name) {
     if (!(name in rooms)) rooms[name] = new Room(irc, jabber, name);
     return rooms[name];
   }
-  
+
   connections.push(function() {
-    console.log('got sigint');
     for (var name in rooms) rooms[name].destroy();
     jabber.end();
     irc.end();
@@ -40,7 +47,7 @@ ircd.createServer(config.irc, function (irc) {
     delete jabber;
     delete irc;
   });
-  
+
 
   // ===========================================================================
   // == Connection setup =======================================================
@@ -78,7 +85,7 @@ ircd.createServer(config.irc, function (irc) {
     if (!jabber.session) return jabber.on('session', fn.bind(this, channel));
     room(channel.substring(1)).jabberJoin();
   });
-  
+
   irc.on('part', function fn(channel) {
     if (!jabber.session) return jabber.on('session', fn.bind(this, channel));
     room(channel.substring(1)).jabberLeave();
@@ -94,16 +101,25 @@ ircd.createServer(config.irc, function (irc) {
     if (!jabber.session) return jabber.on('session', fn.bind(this, recipient, message));
 
     if (recipient[0] === '#') {
-      room(recipient.substring(1)).jabberMessage(message);
+      room(recipient.substring(1)).jabberRoomMessage(message);
     }
     else {
-      console.log(RED('PRIVMSG to users not yet implemented'));
+      for (var name in rooms) {
+        for (var jid in rooms[name].members) {
+          if (rooms[name].members[jid].ircNick === recipient) {
+            jabber.userMessage(jid, message);
+            return;
+          }
+        }
+      }
+
+      console.log(RED('USER DOES NOT EXIST'));
       console.log('got privmsg command: ' + recipient + ' message: ' + message);
     }
   });
 
   irc.on('nick', function fn(nick) {
-    if (!jabber.session) return jabber.on('session', fn.bind(this, recipient, message));
+    if (!jabber.session) return jabber.on('session', fn.bind(this, nick));
 
     // Broadcast nick change to all rooms.
     for (var name in rooms) {
@@ -111,8 +127,60 @@ ircd.createServer(config.irc, function (irc) {
     }
   });
 
+  irc.on('quit', function fn(line) {
+    if (!jabber.session) return jabber.on('session', fn.bind(this, line));
+
+    if (!irc.quit && !jabber.quit) {
+      irc.quit = true;
+      // Leave all rooms.
+      for (var name in rooms) {
+        rooms[name].jabberLeave();
+      }
+      jabber.end();
+    }
+  });
+
+  irc.on('end', function fn() {
+    if (!jabber.session) return jabber.on('session', fn.bind(this));
+
+    // The user disconnected or the connection was lost. Treat this as if the
+    // user send a QUIT command.
+    irc.emit('quit');
+  });
+
+  irc.on('close', function fn() {
+    if (!jabber.session) return jabber.on('session', fn.bind(this));
+
+    // The connection is completely closed in both read and write direction.
+    irc.closed = true;
+    cleanup();
+  });
+
+  function cleanup() {
+    if (irc.closed && jabber.closed) {
+      delete jabber;
+      delete irc;
+    }
+  }
+
   // ===========================================================================
   // == Jabber to IRC ==========================================================
+
+  jabber.on('end', function() {
+    // The Jabber server ended the connection or the connection was lost.
+    jabber.quit = true;
+    if (!irc.quit) {
+      // Disconnect the IRC client, but send a notice that the Jabber connection ended.
+      irc.error('The Jabber server disconnected.');
+      irc.end();
+    }
+  });
+
+  jabber.on('close', function() {
+    // The connection is completely closed in both read and write direction.
+    jabber.closed = true;
+    cleanup();
+  });
 
   // Handle ping message to maintain connection.
   jabber.on('iq', function(iq) {
@@ -135,27 +203,48 @@ ircd.createServer(config.irc, function (irc) {
   jabber.on('message', function(message) {
     var jid = new xmpp.JID(message.from);
 
-    if (message.type === 'groupchat' && jid.host === jabber.config.muc) {
-      var body = path(message, 'message.body').$body;
+    var delay = path(message, 'delay');
+    var x = path(message, 'x');
+    // Normalize timestamp so that we can parse it with new Date();
+    if (x && x.stamp) delay = x.stamp.replace(/^(\d\d\d\d)(\d\d)(\d\d)T(\d\d:\d\d:\d\d)$/, '$1-$2-$3T$4Z');
+    else if (delay && delay.stamp) delay = delay.stamp;
 
-      if (body) {
-        // This is a PRIVMSG
-        var delay = path(message, 'message.delay');
-        if (delay && delay.stamp) body = '[' + delay.stamp + '] ' + body;
+
+    if (message.type === 'groupchat' && jid.host === jabber.config.muc) {
+      var obj;
+      if (obj = path(message, 'subject')) {
+        // This is a topic change.
+        room(jid.user).ircTopic(jid, obj.$body, delay);
+      }
+      else if (obj = path(message, 'body')) {
+        // This is a regular message to the channel.
+        var body = ircd.sanitizeMessage(obj.$body);
+        if (delay) body = '\x0315[' + delay + ']\x03 ' + body;
         var sender = ircd.sanitizeNick(jid.resource);
         room(jid.user).ircMessage(sender, body);
       }
       else {
-        // This may be a topic change?
         console.log(RED('OTHER MESSAGES NOT IMPLEMENTED'));
       }
 
+    }
+    else if (message.type === 'chat' && jid.host === jabber.config.muc) {
+      var obj;
+      if (obj = path(message, 'body')) {
+        var body = ircd.sanitizeMessage(obj.$body);
+        var sender = ircd.sanitizeNick(jid.resource);
+        irc.command('PRIVMSG', irc.user.nick + ' :' + body, sender);
+      }
+      else {
+        // This is for example a composing message that we can't replicate in IRC.
+      }
     }
     else {
       console.log(RED('MESSAGE TYPE NOT IMPLEMENTED: ' + message.type));
     }
   });
 });
+
 
 function Room(irc, jabber, name) {
   this.irc = irc;
@@ -177,26 +266,13 @@ Room.prototype = {
     return '='; // public
   },
 
-  present: false,
+  topic: undefined,
+
+  joined: false,
+
   jabberJoin: function() {
-    var room = this;
-
-    room.present = false;
-    room.jabber.roomPresence(room.nickJID, function(presence) {
-      room.jabber.emit('presence', presence);
-      // When join a room, the presence of the current user is announced last.
-      // That means, when we encounter a presence notification for ourselves, we
-      // know that the initial list of items is complete for this room and we can
-      // continue with the joining process.
-      room.present = true;
-    
-      // Continue with the joining process; the user's presence is now signalled
-      // to jabber and the complete list of users should be stored in this object.
-      // We can now send the join message to IRC.
-      room.irc.command('JOIN', '#' + room.name);
-      room.ircNames();
-    });
-
+    this.joined = false;
+    this.jabber.roomPresence(this.nickJID);
     return this;
   },
 
@@ -204,8 +280,9 @@ Room.prototype = {
     var nicks = [];
     var nickJID = this.nickJID;
     for (var jid in this.members) {
-      // Don't include yourself in the NAMES listing.
-      if (jid !== nickJID) nicks.push(ircd.sanitizeNick(this.members[jid].nick));
+      var nick = this.members[jid].ircNick;
+      if (this.members[jid].role === 'moderator') nick = '@' + nick;
+      nicks.push(nick);
     }
 
     this.irc.reply('353', this.ircType + ' #' + this.name + ' :' + nicks.join(' '));
@@ -215,18 +292,41 @@ Room.prototype = {
   ircMessage: function(sender, body) {
     this.irc.command('PRIVMSG', '#' + this.name + ' :' + body, sender);
   },
-  
-  ircJoin: function(jid) {
-    var nick = ircd.sanitizeNick(jid.resource) + '!' + ircd.sanitizeUser(jid.resource);
+
+  ircJoin: function(jid, info) {
+    var nick = ircd.sanitizeNick(jid.resource) + '!';
+    if (info.realJID) nick += info.realJID;
+    else nick += ircd.sanitizeUser(jid.user) + '@' + ircd.sanitizeUser(jid.host + '/' + jid.resource);
+
     this.irc.command('JOIN', '#' + this.name, nick);
   },
-  
+
   ircPart: function(jid) {
     var nick = ircd.sanitizeNick(jid.resource);
-    this.irc.command('PART', '#' + this.name, nick);
+    this.irc.command('PART', '#' + this.name + ' Leaving...', nick);
   },
 
-  jabberMessage: function(body) {
+  ircNick: function(jid, newNick) {
+    var nick = ircd.sanitizeNick(jid.resource) + '!' + ircd.sanitizeUser(jid.resource);
+    this.irc.command('NICK', ircd.sanitizeNick(newNick), nick);
+  },
+
+  ircTopic: function(jid, topic, delay) {
+    if (delay) {
+      delay = Math.floor(new Date(delay).getTime() / 1000);
+      // RPL_TOPIC
+      this.irc.reply('332', '#' + this.name + ' :' + topic);
+      // RPL_TOPICWHOTIME
+      this.irc.reply('333', '#' + this.name + ' ' + ircd.sanitizeUser(jid.resource) + ' ' + delay);
+    }
+    else {
+      var nick = ircd.sanitizeNick(jid.resource);
+      this.irc.command('TOPIC', '#' + this.name + ' :' + topic, nick);
+    }
+    this.topic = topic;
+  },
+
+  jabberRoomMessage: function(body) {
     this.jabber.roomMessage(this.JID, body, function() {
       // Catch the reply so that it doesn't go into general dispatching
       // When we send a message to the jabber server, it replies with the same
@@ -239,37 +339,69 @@ Room.prototype = {
   },
 
   presence: function(jid, presence) {
+    //<presence from='ds@conference.chat.developmentseed.org/konstantin' to='konstantin@chat.developmentseed.org/164316818812955016904872' type='error' id='medium3'><x xmlns='http://jabber.org/protocol/muc'/><error code='409' type='cancel'><conflict xmlns='urn:ietf:params:xml:ns:xmpp-stanzas'/><text xmlns='urn:ietf:params:xml:ns:xmpp-stanzas'>Nickname is already in use by another occupant</text></error></presence>
+
+
     var id = presence.from;
     var existing = id in this.members;
     if (!existing) this.members[id] = {};
     var info = this.members[id];
-    
-    var item = path(presence, 'presence.x.item');
+
+    var item = path(presence, 'x.item');
     info.role = item.role || '';
-    info.affiliation = item.affiliation || '';
     info.nick = jid.resource;
+    info.realJID = item.jid;
+    info.ircNick = ircd.sanitizeNick(info.nick);
 
-    // <presence from='foo@conference.localhost/othernick' to='irc2muc@localhost/16168164881294954282749820' type='unavailable'><x xmlns='http://jabber.org/protocol/muc#user'><item affiliation='none' role='participant' nick='bar'/><status code='303'/></x></presence>
-    
-
-    if (this.present) {
+    // When join a room, the presence of the current user is announced last.
+    // That means, when we encounter a presence notification for ourselves, we
+    // know that the initial list of items is complete for this room and we can
+    // continue with the joining process.
+    if (!this.joined && id === this.nickJID) {
+      // Continue with the joining process; the user's presence is now signalled
+      // to jabber and the complete list of users should be stored in this object.
+      // We can now send the join message to IRC.
+      this.joined = true;
+      this.ircJoin(jid, info);
+      this.ircNames();
+    }
+    else if (this.joined) {
       // User already joined. This is a notification for a new user.
-      
       if (presence.type === 'unavailable') {
-        this.ircPart(jid);
-        delete this.members[id];
+        // nick changes also masquerade as unavailable. Find out if it's a change:
+        var status = path(presence, 'x.status');
+
+        if (status && status.code === '303') {
+          // Nickname change.
+          this.ircNick(jid, item.nick);
+          // Rename the entry in the member hash.
+          info.nick = item.nick;
+          info.ircNick = ircd.sanitizeNick(info.nick);
+          info.realJID = item.jid;
+          jid.resource = item.nick;
+          this.members[jid.asJID()] = info;
+          this.members[id] = undefined;
+        }
+        else {
+          // Real part.
+          this.ircPart(jid);
+          delete this.members[id];
+        }
       }
       else if (!existing) {
-        this.ircJoin(jid);
+        this.ircJoin(jid, info);
       }
       else {
+        // This may occur after a nick change when an additional presence
+        // notification is sent. However, we already sent the nickname change
+        // to IRC so we're done here.
         console.log(RED('UNKNOWN PRESENCE OF USER'));
       }
     }
   },
 
   jabberLeave: function() {
-    this.jabber.leaveRoom(this.JID);
+    if (this.joined) this.jabber.leaveRoom(this.JID);
   },
 
   destroy: function() {
