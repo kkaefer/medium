@@ -5,11 +5,7 @@ exports.xmpp = {
   
   host: 'localhost',
   jid: 'localhost',
-  muc: 'conference.localhost',
-  
-  host: 'chat.developmentseed.org',
-  jid: 'chat.developmentseed.org',
-  muc: 'conference.chat.developmentseed.org'
+  muc: 'conference.localhost'
 };
 
 exports.irc = {
