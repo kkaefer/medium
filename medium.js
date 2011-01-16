@@ -1,7 +1,7 @@
 var xmpp = require('./lib/xmpp');
 var ircd = require('./lib/ircd');
 var helper = require('./lib/helper');
-var config = require('./config.js');
+var config = global.config = require('./config.js');
 
 require('./lib/color');
 
@@ -43,7 +43,7 @@ ircd.createServer(config.irc, function (irc) {
     for (var name in rooms) rooms[name].destroy();
     jabber.end();
     irc.end();
-    console.log(RED('KILLED ALL CLIENTS'));
+    console.log(RED('Killed all clients.'));
     delete jabber;
     delete irc;
   });
@@ -72,13 +72,13 @@ ircd.createServer(config.irc, function (irc) {
   irc.on('pong', function fn(line) {
     if (!jabber.session) return jabber.on('session', fn.bind(this, line));
 
-    console.log('got pong command: ' + line);
+    if (config.debug) console.log('got pong command: ' + line);
   });
 
   irc.on('list', function fn(line) {
     if (!jabber.session) return jabber.on('session', fn.bind(this, line));
 
-    console.log('got list command: ' + line);
+    if (config.debug) console.log('got list command: ' + line);
   });
 
   irc.on('join', function fn(channel) {
@@ -94,7 +94,7 @@ ircd.createServer(config.irc, function (irc) {
   irc.on('mode', function fn(mode) {
     if (!jabber.session) return jabber.on('session', fn.bind(this, mode));
 
-    console.log('got mode command: ' + mode);
+    if (config.debug) console.log('got mode command: ' + mode);
   });
 
   irc.on('privmsg', function fn(recipient, message) {
@@ -113,8 +113,8 @@ ircd.createServer(config.irc, function (irc) {
         }
       }
 
-      console.log(RED('USER DOES NOT EXIST'));
-      console.log('got privmsg command: ' + recipient + ' message: ' + message);
+      if (config.debug) console.log(RED('USER DOES NOT EXIST'));
+      if (config.debug) console.log('got privmsg command: ' + recipient + ' message: ' + message);
     }
   });
 
@@ -224,7 +224,7 @@ ircd.createServer(config.irc, function (irc) {
         room(jid.user).ircMessage(sender, body);
       }
       else {
-        console.log(RED('OTHER MESSAGES NOT IMPLEMENTED'));
+        if (config.debug) console.log(RED('OTHER MESSAGES NOT IMPLEMENTED'));
       }
 
     }
@@ -240,7 +240,7 @@ ircd.createServer(config.irc, function (irc) {
       }
     }
     else {
-      console.log(RED('MESSAGE TYPE NOT IMPLEMENTED: ' + message.type));
+      if (config.debug) console.log(RED('MESSAGE TYPE NOT IMPLEMENTED: ' + message.type));
     }
   });
 });
@@ -395,7 +395,7 @@ Room.prototype = {
         // This may occur after a nick change when an additional presence
         // notification is sent. However, we already sent the nickname change
         // to IRC so we're done here.
-        console.log(RED('UNKNOWN PRESENCE OF USER'));
+        if (config.debug) console.log(RED('UNKNOWN PRESENCE OF USER'));
       }
     }
   },

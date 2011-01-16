@@ -1,3 +1,5 @@
+exports.debug = true;
+
 exports.xmpp = {
   // host: 'jabber.org',
   // jid: 'jabber.org',
