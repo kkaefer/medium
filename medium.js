@@ -141,7 +141,7 @@ ircd.createServer(config.irc, function (irc) {
     if (!irc.quit) {
       irc.quit = true;
       irc.end();
-      
+
       if (!jabber.quit) {
         // Leave all rooms.
         for (var name in rooms) {
