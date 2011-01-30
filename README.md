@@ -6,7 +6,7 @@ This code is still in alpha; there is barely any error handling and sometimes th
 
 ## Installation
 
-To install, you need [ndistro](https://github.com/visionmedia/ndistro). Then type `ndistro` in the root directory and run the gateway with `bin/node medium.js`.
+To install, you need [ndistro](https://github.com/visionmedia/ndistro). Type `cd /usr/local/bin && curl https://github.com/visionmedia/ndistro/raw/master/install | sh`. Then type `ndistro` in the root directory, change some values in `settings.js` and run the gateway with `bin/node medium.js`.
 
 ## Configuration
 
