@@ -24,7 +24,8 @@ process.on('SIGINT', function() {
 ircd.createServer(config.irc, function (irc) {
   var jabber = new xmpp.Connection(config.xmpp);
 
-  jabber.on('error', function fn() {
+  jabber.on('error', function fn(err) {
+    console.warn('Jabber error: ' + err);
     if (!irc.loggedIn) return irc.on('login', fn.bind(this));
 
     irc.error('Could not connect to Jabber server.');
@@ -39,14 +40,21 @@ ircd.createServer(config.irc, function (irc) {
     return rooms[name];
   }
 
-  connections.push(function() {
-    for (var name in rooms) rooms[name].destroy();
-    jabber.end();
-    irc.end();
-    console.log(RED('Killed all clients.'));
-    delete jabber;
-    delete irc;
-  });
+  var disconnectFn = function() {
+    for (var name in rooms) {
+      rooms[name].destroy();
+      delete rooms[name];
+    }
+    // Wait a bit until all messages have been sent.
+    setTimeout(function() {
+      jabber.end();
+      irc.end();
+      console.log(RED('Killed all clients.'));
+      delete jabber;
+      delete irc;
+    }, 500);
+  };
+  connections.push(disconnectFn);
 
 
   // ===========================================================================
@@ -130,13 +138,24 @@ ircd.createServer(config.irc, function (irc) {
   irc.on('quit', function fn(line) {
     if (!jabber.session) return jabber.on('session', fn.bind(this, line));
 
-    if (!irc.quit && !jabber.quit) {
+    if (!irc.quit) {
       irc.quit = true;
-      // Leave all rooms.
-      for (var name in rooms) {
-        rooms[name].jabberLeave();
+      irc.end();
+      
+      if (!jabber.quit) {
+        // Leave all rooms.
+        for (var name in rooms) {
+          rooms[name].destroy();
+          delete rooms[name];
+        }
+        jabber.end();
       }
-      jabber.end();
+      else {
+        delete irc;
+        delete jabber;
+        var index = connections.indexOf(disconnectFn);
+        if (index >= 0) connections.splice(index, 1);
+      }
     }
   });
 
@@ -174,6 +193,12 @@ ircd.createServer(config.irc, function (irc) {
       irc.error('The Jabber server disconnected.');
       irc.end();
     }
+    else {
+      delete irc;
+      delete jabber;
+      var index = connections.indexOf(disconnectFn);
+      if (index >= 0) connections.splice(index, 1);
+    }
   });
 
   jabber.on('close', function() {
@@ -209,8 +234,14 @@ ircd.createServer(config.irc, function (irc) {
     if (x && x.stamp) delay = x.stamp.replace(/^(\d\d\d\d)(\d\d)(\d\d)T(\d\d:\d\d:\d\d)$/, '$1-$2-$3T$4Z');
     else if (delay && delay.stamp) delay = delay.stamp;
 
-
     if (message.type === 'groupchat' && jid.host === jabber.config.muc) {
+      if (message.from === jid.user + '@' + config.xmpp.muc + '/' + irc.user.nick) {
+          // This is the notification of our own message.
+          // Some servers send this without an ID so it ends up hear instead
+          // of being intercepted by the noop function.
+          return;
+      }
+
       var obj;
       if (obj = path(message, 'subject')) {
         // This is a topic change.
@@ -348,6 +379,7 @@ Room.prototype = {
     var info = this.members[id];
 
     var item = path(presence, 'x.item');
+    if (!item) return;
     info.role = item.role || '';
     info.nick = jid.resource;
     info.realJID = item.jid;
@@ -401,7 +433,7 @@ Room.prototype = {
   },
 
   jabberLeave: function() {
-    if (this.joined) this.jabber.leaveRoom(this.JID);
+    if (this.joined) this.jabber.leaveRoom(this.nickJID);
   },
 
   destroy: function() {

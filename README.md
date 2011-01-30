@@ -7,3 +7,13 @@ This code is still in alpha; there is barely any error handling and sometimes th
 ## Installation
 
 To install, you need [ndistro](https://github.com/visionmedia/ndistro). Then type `ndistro` in the root directory and run the gateway with `bin/node medium.js`.
+
+## Configuration
+
+Medium can only act as a gateway to one Jabber server at a time. The configuration is in `config.js`:
+
+* `debug`: When set, the gateway outputs incoming and outcoming traffic to the command line.
+* `xmpp.host`: The domain of the Jabber server
+* `xmpp.jid`: The host part of the Jabber ID for connecting users. This is required for some servers where the `host` does not match the `jid`, e.g. Google Talk.
+* `xmpp.muc`: The conference server.
+* `xmpp.port`: Port for XMPP connection. Defaults to 5222.

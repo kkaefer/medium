@@ -7,7 +7,8 @@ exports.xmpp = {
   
   host: 'localhost',
   jid: 'localhost',
-  muc: 'conference.localhost'
+  muc: 'conference.localhost',
+  noSSL: true
 };
 
 exports.irc = {
